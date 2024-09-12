@@ -1,5 +1,5 @@
 name:                resource-pool
-version:             0.2.3.2
+version:             0.2.3.3
 synopsis:            A high-performance striped resource pooling implementation
 description:
   A high-performance striped pooling abstraction for managing
@@ -30,14 +30,14 @@ library
     Data.Pool
 
   build-depends:
-    base >= 4.4 && < 5,
+    base ,
     hashable,
-    monad-control >= 0.2.0.1,
+    monad-control ,
     transformers,
-    transformers-base >= 0.4,
-    stm >= 2.3,
+    transformers-base ,
+    stm ,
     time,
-    vector >= 0.7
+    vector
 
   if flag(developer)
     ghc-options: -Werror
