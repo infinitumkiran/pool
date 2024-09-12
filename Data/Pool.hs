@@ -33,6 +33,7 @@ module Data.Pool
     , LocalPool
     , createPool
     , withResource
+    , withResource'
     , takeResource
     , tryWithResource
     , tryTakeResource
@@ -253,10 +254,10 @@ withResource ::
 #else
     (MonadControlIO m)
 #endif
-  => Pool a -> Bool -> (a -> m b) -> m b
-{-# SPECIALIZE withResource :: Pool a -> Bool -> (a -> IO b) -> IO b #-}
-withResource pool shouldCreateNew act = control $ \runInIO -> mask $ \restore -> do
-  (resource, local) <- takeResource pool shouldCreateNew
+  => Pool a -> (a -> m b) -> m b
+{-# SPECIALIZE withResource :: Pool a -> (a -> IO b) -> IO b #-}
+withResource pool act = control $ \runInIO -> mask $ \restore -> do
+  (resource, local) <- takeResource pool
   ret <- restore (runInIO (act resource)) `onException`
             destroyResource pool local resource
   putResource local resource
@@ -272,8 +273,83 @@ withResource pool shouldCreateNew act = control $ \runInIO -> mask $ \restore ->
 -- This function returns both a resource and the @LocalPool@ it came from so
 -- that it may either be destroyed (via 'destroyResource') or returned to the
 -- pool (via 'putResource').
-takeResource :: Pool a -> Bool -> IO (a, LocalPool a)
-takeResource pool@Pool{..} shouldCreateNew = do
+takeResource :: Pool a -> IO (a, LocalPool a)
+takeResource pool@Pool{..} = do
+  local@LocalPool{..} <- getLocalPool pool
+  resource <- liftBase . join . atomically $ do
+    ents <- readTVar entries
+    case ents of
+      (Entry{..}:es) -> writeTVar entries es >> return (return entry)
+      [] -> do
+        used <- readTVar inUse
+        when (used == maxResources) retry
+        writeTVar inUse $! used + 1
+        return $
+          create `onException` atomically (modifyTVar_ inUse (subtract 1))
+  return (resource, local)
+#if __GLASGOW_HASKELL__ >= 700
+{-# INLINABLE takeResource #-}
+#endif
+
+
+-- | Temporarily take a resource from a 'Pool', perform an action with
+-- it, and return it to the pool afterwards.
+--
+-- * If the pool has an idle resource available, it is used
+--   immediately.
+--
+-- * Otherwise, if the maximum number of resources has not yet been
+--   reached, a new resource is created and used.
+--
+-- * If the maximum number of resources has been reached, this
+--   function blocks until a resource becomes available.
+--
+-- If the action throws an exception of any type, the resource is
+-- destroyed, and not returned to the pool.
+--
+-- It probably goes without saying that you should never manually
+-- destroy a pooled resource, as doing so will almost certainly cause
+-- a subsequent user (who expects the resource to be valid) to throw
+-- an exception.
+--
+-- Note : Should only be called when required.
+-- If the flag is enabled and called for every query
+-- a new resource will keep creating leading to a resource leak.
+--
+-- Migrate this function when moving to a different library version
+withResource' ::
+#if MIN_VERSION_monad_control(0,3,0)
+    (MonadBaseControl IO m)
+#else
+    (MonadControlIO m)
+#endif
+  => Pool a -> Bool -> (a -> m b) -> m b
+{-# SPECIALIZE withResource' :: Pool a -> Bool -> (a -> IO b) -> IO b #-}
+withResource' pool shouldCreateNew act = control $ \runInIO -> mask $ \restore -> do
+  (resource, local) <- takeResource' pool shouldCreateNew
+  ret <- restore (runInIO (act resource)) `onException`
+            destroyResource pool local resource
+  putResource local resource
+  return ret
+#if __GLASGOW_HASKELL__ >= 700
+{-# INLINABLE withResource' #-}
+#endif
+
+-- | Take a resource from the pool, following the same results as
+-- 'withResource'. Note that this function should be used with caution, as
+-- improper exception handling can lead to leaked resources.
+--
+-- This function returns both a resource and the @LocalPool@ it came from so
+-- that it may either be destroyed (via 'destroyResource') or returned to the
+-- pool (via 'putResource').
+--
+-- Note : Should only be called when required.
+-- If the flag is enabled and called for every query
+-- a new resource will keep creating leading to a resource leak.
+--
+-- Migrate this function when moving to a different library version
+takeResource' :: Pool a -> Bool -> IO (a, LocalPool a)
+takeResource' pool@Pool{..} shouldCreateNew = do
   local@LocalPool{..} <- getLocalPool pool
   resource <- liftBase . join . atomically $ do
     ents <- if shouldCreateNew
@@ -289,7 +365,7 @@ takeResource pool@Pool{..} shouldCreateNew = do
           create `onException` atomically (modifyTVar_ inUse (subtract 1))
   return (resource, local)
 #if __GLASGOW_HASKELL__ >= 700
-{-# INLINABLE takeResource #-}
+{-# INLINABLE takeResource' #-}
 #endif
 
 -- | Similar to 'withResource', but only performs the action if a resource could
