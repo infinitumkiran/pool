@@ -253,10 +253,10 @@ withResource ::
 #else
     (MonadControlIO m)
 #endif
-  => Pool a -> (a -> m b) -> m b
-{-# SPECIALIZE withResource :: Pool a -> (a -> IO b) -> IO b #-}
-withResource pool act = control $ \runInIO -> mask $ \restore -> do
-  (resource, local) <- takeResource pool
+  => Pool a -> Bool -> (a -> m b) -> m b
+{-# SPECIALIZE withResource :: Pool a -> Bool -> (a -> IO b) -> IO b #-}
+withResource pool shouldCreateNew act = control $ \runInIO -> mask $ \restore -> do
+  (resource, local) <- takeResource pool shouldCreateNew
   ret <- restore (runInIO (act resource)) `onException`
             destroyResource pool local resource
   putResource local resource
@@ -272,11 +272,13 @@ withResource pool act = control $ \runInIO -> mask $ \restore -> do
 -- This function returns both a resource and the @LocalPool@ it came from so
 -- that it may either be destroyed (via 'destroyResource') or returned to the
 -- pool (via 'putResource').
-takeResource :: Pool a -> IO (a, LocalPool a)
-takeResource pool@Pool{..} = do
+takeResource :: Pool a -> Bool -> IO (a, LocalPool a)
+takeResource pool@Pool{..} shouldCreateNew = do
   local@LocalPool{..} <- getLocalPool pool
   resource <- liftBase . join . atomically $ do
-    ents <- readTVar entries
+    ents <- if shouldCreateNew
+      then pure []
+      else readTVar entries
     case ents of
       (Entry{..}:es) -> writeTVar entries es >> return (return entry)
       [] -> do
