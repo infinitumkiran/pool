@@ -33,7 +33,7 @@ module Data.Pool
     , LocalPool
     , createPool
     , withResource
-    , withResource'
+    , createResourceAndDestroy'
     , takeResource
     , tryWithResource
     , tryTakeResource
@@ -42,10 +42,9 @@ module Data.Pool
     , destroyAllResources
     ) where
 
-import Control.Applicative ((<$>))
 import Control.Concurrent (ThreadId, forkIOWithUnmask, killThread, myThreadId, threadDelay)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, onException, mask_)
+import Control.Exception (SomeException, finally, onException, mask_)
 import Control.Monad (forM_, forever, join, liftM3, unless, when)
 import Data.Hashable (hash)
 import Data.IORef (IORef, newIORef, mkWeakIORef)
@@ -317,55 +316,29 @@ takeResource pool@Pool{..} = do
 -- a new resource will keep creating leading to a resource leak.
 --
 -- Migrate this function when moving to a different library version
-withResource' ::
+createResourceAndDestroy' ::
 #if MIN_VERSION_monad_control(0,3,0)
     (MonadBaseControl IO m)
 #else
     (MonadControlIO m)
 #endif
-  => Pool a -> Bool -> (a -> m b) -> m b
-{-# SPECIALIZE withResource' :: Pool a -> Bool -> (a -> IO b) -> IO b #-}
-withResource' pool shouldCreateNew act = control $ \runInIO -> mask $ \restore -> do
-  (resource, local) <- takeResource' pool shouldCreateNew
-  ret <- restore (runInIO (act resource)) `onException`
-            destroyResource pool local resource
-  putResource local resource
-  return ret
+  => Pool a -> (a -> m b) -> m b
+{-# SPECIALIZE createResourceAndDestroy' :: Pool a -> (a -> IO b) -> IO b #-}
+createResourceAndDestroy' pool act = control $ \runInIO -> mask $ \restore -> do
+  (resource, local) <- createResource' pool
+  restore (runInIO (act resource)) `finally`
+    destroyResource pool local resource
 #if __GLASGOW_HASKELL__ >= 700
-{-# INLINABLE withResource' #-}
+{-# INLINABLE createResourceAndDestroy' #-}
 #endif
 
--- | Take a resource from the pool, following the same results as
--- 'withResource'. Note that this function should be used with caution, as
--- improper exception handling can lead to leaked resources.
---
--- This function returns both a resource and the @LocalPool@ it came from so
--- that it may either be destroyed (via 'destroyResource') or returned to the
--- pool (via 'putResource').
---
--- Note : Should only be called when required.
--- If the flag is enabled and called for every query
--- a new resource will keep creating leading to a resource leak.
---
--- Migrate this function when moving to a different library version
-takeResource' :: Pool a -> Bool -> IO (a, LocalPool a)
-takeResource' pool@Pool{..} shouldCreateNew = do
-  local@LocalPool{..} <- getLocalPool pool
-  resource <- liftBase . join . atomically $ do
-    ents <- if shouldCreateNew
-      then pure []
-      else readTVar entries
-    case ents of
-      (Entry{..}:es) -> writeTVar entries es >> return (return entry)
-      [] -> do
-        used <- readTVar inUse
-        when (used == maxResources) retry
-        writeTVar inUse $! used + 1
-        return $
-          create `onException` atomically (modifyTVar_ inUse (subtract 1))
+createResource' :: Pool a -> IO (a, LocalPool a)
+createResource' pool@Pool{..} = do
+  local <- getLocalPool pool
+  resource <- liftBase . join . atomically $ return create
   return (resource, local)
 #if __GLASGOW_HASKELL__ >= 700
-{-# INLINABLE takeResource' #-}
+{-# INLINABLE createResource' #-}
 #endif
 
 -- | Similar to 'withResource', but only performs the action if a resource could
