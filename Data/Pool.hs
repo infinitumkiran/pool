@@ -342,25 +342,51 @@ createResource' pool@Pool{..} = do
 {-# INLINABLE createResource' #-}
 #endif
 
-withResource' :: (E.Exception e) => Pool a -> (e -> Bool) -> (a -> IO b) -> IO b
-withResource' pool@Pool{..} shouldCreateNew act = control $ \runInIO -> mask $ \restore -> do
-  (resource, local) <- takeResource pool
-  ret' <- runInIO (Right <$> act resource) `E.catch` (pure . Left)
-  (ret, newResource) <- case ret' of
-          Right r -> pure (r, resource)
-          Left  e -> do
-            if shouldCreateNew e
-              then do
-                destroyResource pool local resource
-                resource' <- create
-                retur <- runInIO (act resource') `onException` destroyResource pool local resource'
-                pure (retur, resource')
-              else
-                restore (E.throw e) `onException` destroyResource pool local resource
-  putResource local newResource
+withResource' ::
+#if MIN_VERSION_monad_control(0,3,0)
+    (MonadBaseControl IO m)
+#else
+    (MonadControlIO m)
+#endif
+  => Pool a -> Bool -> (a -> m b) -> m b
+{-# SPECIALIZE withResource' :: Pool a -> Bool -> (a -> IO b) -> IO b #-}
+withResource' pool shouldCreateNew act = control $ \runInIO -> mask $ \restore -> do
+  (resource, local) <- takeResource' pool shouldCreateNew
+  ret <- restore (runInIO (act resource)) `onException`
+            destroyResource pool local resource
+  unless shouldCreateNew $
+    putResource local resource
   return ret
 #if __GLASGOW_HASKELL__ >= 700
 {-# INLINABLE withResource' #-}
+#endif
+
+-- | Take a resource from the pool, following the same results as
+-- 'withResource'. Note that this function should be used with caution, as
+-- improper exception handling can lead to leaked resources.
+--
+-- This function returns both a resource and the @LocalPool@ it came from so
+-- that it may either be destroyed (via 'destroyResource') or returned to the
+-- pool (via 'putResource').
+--
+-- Note : Should only be called when required.
+-- If the flag is enabled and called for every query
+-- a new resource will keep creating leading to a resource leak.
+--
+-- Migrate this function when moving to a different library version
+takeResource' :: Pool a -> Bool -> IO (a, LocalPool a)
+takeResource' pool@Pool{..} shouldCreateNew = do
+  local@LocalPool{..} <- getLocalPool pool
+  resource <- liftBase . join . atomically $ do
+    ents <- if shouldCreateNew
+      then pure []
+      else readTVar entries
+    case ents of
+      (Entry{..}:es) -> writeTVar entries es >> return (return entry)
+      [] -> return create
+  return (resource, local)
+#if __GLASGOW_HASKELL__ >= 700
+{-# INLINABLE takeResource' #-}
 #endif
 -- | Similar to 'withResource', but only performs the action if a resource could
 -- be taken from the pool /without blocking/. Otherwise, 'tryWithResource'
