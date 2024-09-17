@@ -33,6 +33,7 @@ module Data.Pool
     , LocalPool
     , createPool
     , withResource
+    , withResource'
     , createResourceAndDestroy'
     , takeResource
     , tryWithResource
@@ -341,6 +342,26 @@ createResource' pool@Pool{..} = do
 {-# INLINABLE createResource' #-}
 #endif
 
+withResource' :: (E.Exception e) => Pool a -> (e -> Bool) -> (a -> IO b) -> IO b
+withResource' pool@Pool{..} shouldCreateNew act = control $ \runInIO -> mask $ \restore -> do
+  (resource, local) <- takeResource pool
+  ret' <- runInIO (Right <$> act resource) `E.catch` (pure . Left)
+  (ret, newResource) <- case ret' of
+          Right r -> pure (r, resource)
+          Left  e -> do
+            if shouldCreateNew e
+              then do
+                destroyResource pool local resource
+                resource' <- create
+                retur <- runInIO (act resource') `onException` destroyResource pool local resource'
+                pure (retur, resource')
+              else
+                restore (E.throw e) `onException` destroyResource pool local resource
+  putResource local newResource
+  return ret
+#if __GLASGOW_HASKELL__ >= 700
+{-# INLINABLE withResource' #-}
+#endif
 -- | Similar to 'withResource', but only performs the action if a resource could
 -- be taken from the pool /without blocking/. Otherwise, 'tryWithResource'
 -- returns immediately with 'Nothing' (ie. the action function is /not/ called).
