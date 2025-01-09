@@ -342,21 +342,29 @@ createResource' pool@Pool{..} = do
 {-# INLINABLE createResource' #-}
 #endif
 
-withResource' ::
-#if MIN_VERSION_monad_control(0,3,0)
-    (MonadBaseControl IO m)
-#else
-    (MonadControlIO m)
-#endif
-  => Pool a -> Bool -> (a -> m b) -> m b
-{-# SPECIALIZE withResource' :: Pool a -> Bool -> (a -> IO b) -> IO b #-}
-withResource' pool shouldCreateNew act = control $ \runInIO -> mask $ \restore -> do
-  (resource, local) <- takeResource' pool shouldCreateNew
-  ret <- restore (runInIO (act resource)) `onException`
+-- withResource' ::
+-- #if MIN_VERSION_monad_control(0,3,0)
+--     (MonadBaseControl IO m)
+-- #else
+--     (MonadControlIO m)
+-- #endif
+--   => Pool a -> Bool -> (a -> m b) -> m b
+-- {-# SPECIALIZE withResource' :: Pool a -> Bool -> (a -> IO b) -> IO b #-}
+withResource' :: (E.Exception e) => Pool a -> (e -> Bool) -> (a -> IO b) -> IO b
+withResource' pool@Pool{..} shouldCreateNew act = control $ \runInIO -> mask $ \restore -> do
+  (resource, local) <- takeResource pool
+  ret' <- runInIO (Right <$> act resource) `E.catch` (pure . Left)
+  case ret' of
+          Right r -> putResource local resource *> pure r
+          Left  e -> do
             destroyResource pool local resource
-  unless shouldCreateNew $
-    putResource local resource
-  return ret
+            if shouldCreateNew e
+              then do
+                resource' <- create
+                retur <- runInIO (act resource')
+                pure retur
+              else
+                restore (E.throw e)
 #if __GLASGOW_HASKELL__ >= 700
 {-# INLINABLE withResource' #-}
 #endif
