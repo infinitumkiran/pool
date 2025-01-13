@@ -34,6 +34,7 @@ module Data.Pool
     , createPool
     , withResource
     , withResource'
+    , takeResource'
     , createResourceAndDestroy'
     , takeResource
     , tryWithResource
@@ -258,9 +259,13 @@ withResource ::
 {-# SPECIALIZE withResource :: Pool a -> (a -> IO b) -> IO b #-}
 withResource pool act = control $ \runInIO -> mask $ \restore -> do
   (resource, local) <- takeResource pool
-  ret <- restore (runInIO (act resource)) `onException`
+  ret <- (do
+          res <- restore (runInIO (act resource))
+          putResource local resource
+          pure res
+          ) `onException`
             destroyResource pool local resource
-  putResource local resource
+
   return ret
 #if __GLASGOW_HASKELL__ >= 700
 {-# INLINABLE withResource #-}
@@ -360,8 +365,9 @@ withResource' pool@Pool{..} shouldCreateNew act = control $ \runInIO -> mask $ \
             destroyResource pool local resource
             if shouldCreateNew e
               then do
-                resource' <- create
+                (resource', _) <- createResource' pool
                 retur <- runInIO (act resource')
+                putResource local resource'
                 pure retur
               else
                 restore (E.throw e)
