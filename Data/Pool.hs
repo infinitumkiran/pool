@@ -277,9 +277,6 @@ withResource pool act = control $ \runInIO -> mask $ \restore -> do
 -- * If the maximum number of resources has been reached, this
 --   function blocks until a resource becomes available.
 --
--- If the action throws an exception of any type, the resource is
--- destroyed, and not returned to the pool.
---
 -- Caution : This function upon any error while taking a bad resource
 -- will destroy the bad resource and will create a new resource in the
 -- same local and keeps it back in the pool.
