@@ -295,11 +295,16 @@ withResourceAndRetry pool@Pool{..} act = control $ \runInIO -> mask $ \restore -
   case ret' of
     Right r -> putResource local resource *> pure r
     Left (_ :: SomeException) -> do
+      LocalPool{..} <- getLocalPool pool
       destroyResource pool local resource
-      resource' <- liftBase . join . atomically $ return create
-      retur <- restore (runInIO (act resource'))
+      resource' <- liftBase . join . atomically $ do
+        used <- readTVar inUse
+        when (used == maxResources) retry
+        writeTVar inUse $! used + 1
+        return $ create `onException` atomically (modifyTVar_ inUse (subtract 1))
+      return' <- restore (runInIO (act resource')) `onException` destroyResource pool local resource'
       putResource local resource'
-      pure retur
+      pure return'
 #if __GLASGOW_HASKELL__ >= 700
 {-# INLINABLE withResourceAndRetry #-}
 #endif
