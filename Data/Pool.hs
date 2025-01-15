@@ -290,12 +290,11 @@ withResourceAndRetry ::
   => Pool a -> (a -> m b) -> m b
 {-# SPECIALIZE withResourceAndRetry :: Pool a -> (a -> IO b) -> IO b #-}
 withResourceAndRetry pool@Pool{..} act = control $ \runInIO -> mask $ \restore -> do
-  (resource, local) <- takeResource pool
+  (resource, local@LocalPool{..}) <- takeResource pool
   ret' <- E.try $ restore (runInIO (act resource))
   case ret' of
     Right r -> putResource local resource *> pure r
     Left (_ :: SomeException) -> do
-      LocalPool{..} <- getLocalPool pool
       destroy resource `E.catch` \(_::SomeException) -> return ()
       resource' <- liftBase . join . atomically $
         return $ create `onException` atomically (modifyTVar_ inUse (subtract 1))
