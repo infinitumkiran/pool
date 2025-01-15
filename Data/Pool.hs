@@ -27,6 +27,7 @@
 -- More stripes will lead to reduced contention in high-performance
 -- multicore applications, at a trade-off of causing the maximum
 -- number of simultaneous resources in use to grow.
+
 module Data.Pool
     (
       Pool(idleTime, maxResources, numStripes)
