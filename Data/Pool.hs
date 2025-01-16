@@ -295,6 +295,8 @@ withResourceAndRetry pool@Pool{..} act = control $ \runInIO -> mask $ \restore -
   print ("delay 1")
   threadDelay 10000000
   (resource, local@LocalPool{..}) <- takeResource pool
+  print ("delay 1.5")
+  threadDelay 10000000
   ret' <- E.try $ restore (runInIO (act resource))
   case ret' of
     Right r -> do
