@@ -291,15 +291,29 @@ withResourceAndRetry ::
   => Pool a -> (a -> m b) -> m b
 {-# SPECIALIZE withResourceAndRetry :: Pool a -> (a -> IO b) -> IO b #-}
 withResourceAndRetry pool@Pool{..} act = control $ \runInIO -> mask $ \restore -> do
+  print ("flow 1 happy case")
+  print ("delay 1")
+  threadDelay 10000000
   (resource, local@LocalPool{..}) <- takeResource pool
   ret' <- E.try $ restore (runInIO (act resource))
   case ret' of
-    Right r -> putResource local resource *> pure r
+    Right r -> do
+      print ("success")
+      putResource local resource *> pure r -- If resource is healthy we put it back in the pool.
     Left (_ :: SomeException) -> do
+      print ("fail flow 2")
+      print ("delay 2")
+      threadDelay 10000000
+      -- Here , we are destroying the unhealthy resource without decrementing inUse.
       destroy resource `E.catch` \(_::SomeException) -> return ()
+      -- We still didnt decrement inUse cause we are yet to replace it with the healthy resource.
+      print ("delay 3")
+      threadDelay 10000000
       resource' <- liftBase . join . atomically $
-        return $ create `onException` atomically (modifyTVar_ inUse (subtract 1))
-      return' <- restore (runInIO (act resource')) `onException` destroyResource pool local resource'
+      -- Now we create a new resource in case we are unable to, then we decrement inUse.
+        return $ create `onException` do print ("flow 3 part 1") *>  atomically (modifyTVar_ inUse (subtract 1))
+      -- We act upon the resource , but if its an unhealthy resource we destroy 
+      return' <- restore (runInIO (act resource')) `onException` (do print ("flow 3 part 2") *> destroyResource pool local resource')
       putResource local resource'
       pure return'
 #if __GLASGOW_HASKELL__ >= 700
